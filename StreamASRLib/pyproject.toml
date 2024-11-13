@@ -1,0 +1,11 @@
+[build-system]
+requires = ["setuptools >= 61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "StreamASRLib"
+version = "0.0.1"
+dependencies = [
+  "jiwer"
+]
+requires-python = ">= 3.8"
