@@ -1,2 +1,3 @@
 from .config import DEVICE
-from .ASRBaseModel import ASRBaseModel
+from .base_asr_model import ASRBaseModel
+from .ext_embedding import ExtendedEmbedding
