@@ -3,7 +3,6 @@ import os
 
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 
 import torch
 import torch.nn as nn
@@ -39,18 +38,16 @@ BOA_TOKEN = AUDIO_TOKEN_THRESHOLD + AUDIO_TOKENS
 EOA_TOKEN = BOA_TOKEN + 1
 EXT_TOKENS = AUDIO_TOKENS + 2
 
-DS_TRAIN_360_RAW = '/storage/netkex/datasets/custom/librispeech-train-clean-360-raw'
-DS_TRAIN_500_RAW = '/storage/netkex/datasets/custom/librispeech-train-other-500-raw'
-DS_TEST_RAW = '/storage/netkex/datasets/custom/librispeech-test-clean-raw'
-
-DS_TRAIN = '/storage/netkex/datasets/custom/librispeech-train-2'
-DS_TEST = '/storage/netkex/datasets/custom/librispeech-test-2'
+DS_TRAIN = '/home/netkex/datasets/custom/librispeech-train'
+DS_TEST = '/home/netkex/datasets/custom/librispeech-test'
 
 tokenizer = None
 
 
 def prepare_ds(ds: Dataset):
     ds_ = ds.remove_columns(['wav-tokens', 'text'])
+    ds_ = ds_.rename_column("text_start", "label_text_start")
+    ds_ = ds_.rename_column("text_end", "label_text_end")
     return ds_
 
 
@@ -58,6 +55,7 @@ def build_ref_seq(output: torch.Tensor) -> str:
     global tokenizer
     tokens = torch.argmax(output, dim=-1)
     return tokenizer.decode(tokens.cpu())
+
 
 # Custom embedding class for new wav-tokens
 class ExtendedEmbedding(nn.Module):
@@ -94,15 +92,16 @@ class CustomTrainer(Trainer):
         output = model(input_ids=inputs.input_ids,
                        attention_mask=inputs.attention_mask)
 
-        logits = []
-        targets = []
-        for id, (start, end) in enumerate(zip(label_text_start, label_text_end)):
-            logits.append(output.logits[id, (start - 1):(end - 1), :])
-            targets.append(inputs.input_ids[id, start:end])
+        logits = output.logits.float()
+        batch_size = logits.shape[0]
+        loss = 0
 
-        logits_ = torch.concatenate(logits, dim=0)
-        targets_ = torch.concatenate(targets, dim=0)
-        loss = self.loss(logits_, targets_)
+        for id, (start, end) in enumerate(zip(label_text_start, label_text_end)):
+            seq_logits = logits[id, (start - 1):(end - 1), :]
+            seq_target = inputs.input_ids[id, start:end]
+            loss += self.loss(seq_logits, seq_target)
+        loss /= batch_size
+
         return (loss, output) if (return_outputs) else loss
 
 
@@ -164,7 +163,7 @@ class WandbProgressCallback(WandbCallback):
 
 def main():
     global tokenizer
-    
+
     # Load data
     ds_train = load_from_disk(DS_TRAIN)
     ds_test = load_from_disk(DS_TEST)
@@ -192,7 +191,7 @@ def main():
     wandb.init(
         project="Qwen05b-hf-full-train",
         config={},
-        name="iteration-2.1",
+        name="iteration-2.5",
         # disable system logging
         settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
     )
@@ -201,14 +200,14 @@ def main():
     wer_metric = WerMetric(tokenizer)
 
     train_args = TrainingArguments(
-        output_dir='/storage/netkex/outputs/qwen05-train',
+        output_dir='/home/netkex/outputs/qwen05-train',
         eval_strategy='steps', eval_steps=25, batch_eval_metrics=True, include_inputs_for_metrics=True,
         per_device_train_batch_size=2,
         per_device_eval_batch_size=2,
         dataloader_num_workers=8, dataloader_prefetch_factor=4,
-        gradient_accumulation_steps=32,
+        gradient_accumulation_steps=64,
         learning_rate=6e-5, max_grad_norm=25.0,
-        max_steps=10_000,
+        max_steps=20_000,
         report_to='wandb', logging_strategy='steps', logging_steps=1,
         save_strategy='steps', save_steps=50, save_total_limit=3, load_best_model_at_end=True,
         label_names=['label_text_start', 'label_text_end'],
