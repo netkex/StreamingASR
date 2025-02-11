@@ -1,24 +1,19 @@
+import argparse
 import wandb
 import os
 
-import pandas as pd
 import numpy as np
 
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
-import transformers
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from transformers import Trainer, TrainingArguments, DataCollatorWithPadding, EvalPrediction
 from transformers.integrations import WandbCallback
 from datasets import load_dataset, load_from_disk, concatenate_datasets
 
-from tqdm.notebook import tqdm
-from typing import Dict, List
-
 from StreamASRLib.eval import calculate_wer
-
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -38,8 +33,6 @@ BOA_TOKEN = AUDIO_TOKEN_THRESHOLD + AUDIO_TOKENS
 EOA_TOKEN = BOA_TOKEN + 1
 EXT_TOKENS = AUDIO_TOKENS + 2
 
-DS_TRAIN = '/home/netkex/datasets/custom/librispeech-train'
-DS_TEST = '/home/netkex/datasets/custom/librispeech-test'
 
 tokenizer = None
 
@@ -164,9 +157,22 @@ class WandbProgressCallback(WandbCallback):
 def main():
     global tokenizer
 
+    parser = argparse.ArgumentParser(prog='Qwen training script')
+    parser.add_argument(
+        '--train-path', default='/home/netkex/datasets/custom/librispeech-train', type=str)
+    parser.add_argument(
+        '--test-path', default='/home/netkex/datasets/custom/librispeech-test', type=str)
+    parser.add_argument(
+        '--run-name', default='iteration-0', type=str)
+    parser.add_argument(
+        '--output-dir', default='/home/netkex/outputs/qwen05-train', type=str)
+    parser.add_argument(
+        '--max-steps', default=20_000, type=int)
+    args = parser.parse_args()
+
     # Load data
-    ds_train = load_from_disk(DS_TRAIN)
-    ds_test = load_from_disk(DS_TEST)
+    ds_train = load_from_disk(args.train_path)
+    ds_test = load_from_disk(args.test_path)
 
     ds_train_ = prepare_ds(ds_train)
     ds_test_ = prepare_ds(ds_test)
@@ -191,7 +197,7 @@ def main():
     wandb.init(
         project="Qwen05b-hf-full-train",
         config={},
-        name="iteration-2.5",
+        name=args.run_name,
         # disable system logging
         settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
     )
@@ -200,14 +206,14 @@ def main():
     wer_metric = WerMetric(tokenizer)
 
     train_args = TrainingArguments(
-        output_dir='/home/netkex/outputs/qwen05-train',
+        output_dir=args.output_dir,
         eval_strategy='steps', eval_steps=25, batch_eval_metrics=True, include_inputs_for_metrics=True,
         per_device_train_batch_size=2,
         per_device_eval_batch_size=2,
         dataloader_num_workers=8, dataloader_prefetch_factor=4,
         gradient_accumulation_steps=64,
         learning_rate=6e-5, max_grad_norm=25.0,
-        max_steps=20_000,
+        max_steps=args.max_steps,
         report_to='wandb', logging_strategy='steps', logging_steps=1,
         save_strategy='steps', save_steps=50, save_total_limit=3, load_best_model_at_end=True,
         label_names=['label_text_start', 'label_text_end'],
