@@ -1,18 +1,24 @@
 import torch
+import numpy as np
 import torchaudio
 import torchaudio.functional as AF
+import torchaudio.transforms as AT
 from torch.utils.data import Dataset
+from dataclasses import dataclass
 
 
-class DummyEffector:
-    def __init__(self):
-        pass
-
-    def apply(self, wav, sr):
-        return wav
+def coin(p: float) -> bool:
+    return torch.rand(1).item() < p
 
 
-class AudioAugmentation:
+class FFMPEGAugmentations:
+    class DummyEffector:
+        def __init__(self):
+            pass
+
+        def apply(self, wav, sr):
+            return wav
+
     # echo effect augmentation very bad with wav tokens
     def __init__(self,
                  apply_atempo_p: float = 0.0, atempo_min: float = 0.8, atempo_max: float = 1.2,
@@ -45,7 +51,7 @@ class AudioAugmentation:
 
         effect = ','.join(effects_list)
         if effect == '':
-            return DummyEffector()
+            return FFMPEGAugmentations.DummyEffector()
         print(f'Effect: {effect}')
         return torchaudio.io.AudioEffector(effect=effect)
 
@@ -68,60 +74,119 @@ class AudioAugmentation:
         return AF.add_noise(wav.reshape((1, -1)), noise, torch.tensor([self.noise_snr])).reshape(-1)
 
 
-class WavTextDataset:
+class WhiteNoise:
+    def __init__(self, noise_std: float = 0.01, noise_snr: float = 35):
+        self.noise_std = noise_std
+        self.noise_snr = noise_snr
+
+    def __call__(self, wav: torch.Tensor) -> torch.Tensor:
+        noise = torch.normal(0, self.noise_std, (1, wav.nelement()))
+        return AF.add_noise(wav.reshape((1, -1)), noise, torch.tensor([self.noise_snr])).reshape(-1)
+
+
+class SpeedUpDown:
+    def __call__(self, spec: torch.Tensor, speed_up_factor: float = 1.0) -> torch.Tensor:
+        freq_num = int(speed_up_factor * spec.shape[-1])
+        ind = np.round(np.linspace(
+            0, spec.shape[-1] - 1, freq_num)).astype(int)
+        return spec[..., :, ind]
+
+
+class PitchUpDown:
+    # TODO: fix. At the moment, works quit badly
+    def _pitch_up(self, spec: torch.Tensor, pitch_factor: int) -> torch.Tensor:
+        spec_pitched = torch.zeros_like(spec, dtype=spec.dtype)
+        final_freq = spec.shape[-2] - pitch_factor
+        spec_pitched[..., pitch_factor:, :] = spec[..., :final_freq, :]
+        return spec_pitched
+
+    def _pitch_down(self, spec: torch.Tensor, pitch_factor: int) -> torch.Tensor:
+        spec_pitched = torch.zeros_like(spec, dtype=spec.dtype)
+        final_freq = spec.shape[-2] - pitch_factor
+        spec_pitched[..., :final_freq, :] = spec[..., pitch_factor:, :]
+        return spec_pitched
+
+    def __call__(self, spec: torch.Tensor, pith_factor: int = 0) -> torch.Tensor:
+        if pith_factor == 0:
+            return spec
+        return self._pitch_up(spec, pith_factor) if pith_factor > 0 else self._pitch_down(spec, -pith_factor)
+
+
+class FrequencyMask:
+    def __init__(self, freq_mask_param: int):
+        self.freq_mask_param = freq_mask_param
+
+    def __call__(self, spec: torch.Tensor) -> torch.Tensor:
+        start = torch.randint(
+            spec.shape[-2] - self.freq_mask_param, size=(1,)).item()
+        spec[..., start:start + self.freq_mask_param, :] = 0
+        return spec
+
+
+@dataclass
+class SpecAugmentationConfig:
+    apply_aug_p: float = 0.0
+
+    apply_speed: bool = False
+    speed_p: float = 0.0
+    min_speed_up: float = 0.75
+    max_speed_up: float = 1.25
+
+    apply_masking: bool = False
+    masking_p: float = 0.0
+    freq_mask_param: int = 100
+
+    apply_noise: bool = False
+    noise_p: float = 0.0
+    noise_std: float = 0.01
+    noise_snr: float = 35
+
+    # apply_pitch: bool = False
+    # pitch_p: float = 0.0
+    # min_pitch: int = -1
+    # max_pitch: int = 1
+
+
+class SpecAugmenation:
+    speed_transform = SpeedUpDown()
+
     def __init__(self,
-                 wav_model,
-                 tokenizer,
-                 librispeech_dataset,
-                 augmentator,
-                 eos_token: int,
-                 boa_token: int,
-                 eoa_token: int,
-                 audio_token_threshold: int,
-                 void_token_prob: float = 0.0,
-                 void_token: int = 2548,
-                 add_text: bool = False
-                 ):
-        self.wav_model = wav_model
-        self.tokenizer = tokenizer
-        self.librispeech_dataset = librispeech_dataset
-        self.augmentator = augmentator
-        self.eos_token = eos_token
-        self.boa_token = boa_token
-        self.eoa_token = eoa_token
-        self.audio_token_threshold = audio_token_threshold
-        self.void_token_prob = void_token_prob
-        self.void_token = void_token
-        self.add_text = add_text
+                 n_fft=1024,
+                 config: SpecAugmentationConfig = SpecAugmentationConfig()):
+        self.n_fft = n_fft
+        self.config = config
 
-    def __len__(self):
-        return len(self.librispeech_dataset)
+        self.wav_to_spec = AT.Spectrogram(n_fft=n_fft, power=None)
+        self.spec_to_wav = AT.InverseSpectrogram(n_fft=n_fft)
+        self.mask_transform = FrequencyMask(config.freq_mask_param)
+        self.noise = WhiteNoise(config.noise_std, config.noise_snr)
 
-    def __item__(self, id):
-        audio_item = self.librispeech_dataset[id]
-        wav, sr = audio_item['audio'].flatten(), audio_item['sr']
-        aug_wav = self.augmentator(wav, sr)
-        wav_tokens = self.wav_model.tokenize(aug_wav, sr)
-        aug_wav_tokens = self._drop_tokens(wav_tokens)
-        text_tokens = self.tokenizer(
-            audio_item['text'], add_special_tokens=False).input_ids.flatten()
+    def _noise(self, wav: torch.Tensor) -> torch.Tensor:
+        if not self.config.apply_noise or not coin(self.config.noise_p):
+            return wav
+        print('Applied noise')
+        return self.noise(wav)
 
-        input_ids = torch.concatenate((
-            torch.tensor([self.boa_token]),
-            aug_wav_tokens,
-            torch.tensor([self.eoa_token]),
-            text_tokens,
-            torch.tensor([self.eos_token])
-        ), 0)
-        attention_mask = torch.ones_like(input_ids)
-        text_start = 2 + aug_wav_tokens.shape[0]
-        text_end = input_ids.shape[0]
-        res = {
-            'input_ids': input_ids,
-            'attention_mask': attention_mask,
-            'label_text_start': text_start,
-            'label_text_end': text_end
-        }
-        if self.add_text:
-            res['text'] = audio_item['text']
-        return res
+    def _speedup(self, spec: torch.Tensor) -> torch.Tensor:
+        if not self.config.apply_speed or not coin(self.config.speed_p):
+            return spec
+        speed_coef = self.config.min_speed_up + \
+            torch.rand(1).item() * (self.config.max_speed_up -
+                                    self.config.min_speed_up)
+        print(f'Applied speedup {speed_coef}')
+        return self.speed_transform(spec, speed_coef)
+
+    def _mask(self, spec: torch.Tensor) -> torch.Tensor:
+        if not self.config.apply_masking or not coin(self.config.masking_p):
+            return spec
+        print('Applied masking')
+        return self.mask_transform(spec)
+
+    def __call__(self, wav: torch.Tensor) -> torch.Tensor:
+        if not coin(self.config.apply_aug_p):
+            return wav
+        noise_wav = self._noise(wav)
+        spec = self.wav_to_spec(noise_wav)
+        aug_spec = self._speedup(spec)
+        aug_spec = self._mask(aug_spec)
+        return self.spec_to_wav(aug_spec).reshape(-1)
