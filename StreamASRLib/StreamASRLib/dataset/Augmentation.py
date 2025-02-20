@@ -147,7 +147,7 @@ class SpecAugmentationConfig:
     # max_pitch: int = 1
 
 
-class SpecAugmenation:
+class SpecAugmentation:
     speed_transform = SpeedUpDown()
 
     def __init__(self,
@@ -164,7 +164,7 @@ class SpecAugmenation:
     def _noise(self, wav: torch.Tensor) -> torch.Tensor:
         if not self.config.apply_noise or not coin(self.config.noise_p):
             return wav
-        print('Applied noise')
+        # print('Applied noise')
         return self.noise(wav)
 
     def _speedup(self, spec: torch.Tensor) -> torch.Tensor:
@@ -173,13 +173,13 @@ class SpecAugmenation:
         speed_coef = self.config.min_speed_up + \
             torch.rand(1).item() * (self.config.max_speed_up -
                                     self.config.min_speed_up)
-        print(f'Applied speedup {speed_coef}')
+        # print(f'Applied speedup {speed_coef}')
         return self.speed_transform(spec, speed_coef)
 
     def _mask(self, spec: torch.Tensor) -> torch.Tensor:
         if not self.config.apply_masking or not coin(self.config.masking_p):
             return spec
-        print('Applied masking')
+        # print('Applied masking')
         return self.mask_transform(spec)
 
     def __call__(self, wav: torch.Tensor) -> torch.Tensor:
