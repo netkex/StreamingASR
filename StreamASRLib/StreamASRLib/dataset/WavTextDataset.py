@@ -35,11 +35,12 @@ class WavTextDataset:
         return len(self.librispeech_dataset)
 
     def _drop_tokens(self, wav_tokens: torch.Tensor) -> torch.Tensor:
-        if not self._drop_tokens:
+        if not self.drop_tokens:
             return wav_tokens
         drop_msk = torch.rand(wav_tokens.shape) < self.drop_token_prob
-        wav_tokens[drop_msk] = self.void_token
-        return wav_tokens
+        masked_wav_tokens = wav_tokens.clone()
+        masked_wav_tokens[drop_msk] = self.void_token
+        return masked_wav_tokens
 
     def __getitem__(self, id):
         audio_item = self.librispeech_dataset[id]
