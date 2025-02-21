@@ -259,7 +259,7 @@ class WandbProgressCallback(WandbCallback):
         self._wandb.log({'Validation samples': sample_table})
 
     def log_train_table(self):
-        sample_ds = self._get_sample_ds(self.val_dataset)
+        sample_ds = self._get_sample_ds(self.train_dataset)
         sample_table = self._build_sample_table(sample_ds)
         self._wandb.log({'Train samples': sample_table})
 
