@@ -51,9 +51,9 @@ class WavQwenModel:
             WavQwenModel.QWEN_REPO, use_fast=fast_tokenizer)
 
     @classmethod
-    def init(cls, device='cpu'):
+    def init(cls):
         qwen_model = AutoModelForCausalLM.from_pretrained(
-            WavQwenModel.QWEN_REPO, device_map=device)
+            WavQwenModel.QWEN_REPO)
         base_emb = qwen_model.model.embed_tokens
         ext_emb = ExtendedEmbedding(
             base_emb, WavQwenModel.EXT_TOKENS, WavQwenModel.AUDIO_TOKEN_THRESHOLD)
