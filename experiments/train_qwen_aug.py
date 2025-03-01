@@ -10,30 +10,19 @@ import torchaudio
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer
 from transformers import Trainer, TrainingArguments, DataCollatorWithPadding, EvalPrediction
 from transformers.integrations import WandbCallback
 from datasets import load_dataset, load_from_disk, concatenate_datasets
 
 from StreamASRLib.eval import calculate_wer
 from StreamASRLib.dataset import MergeDataset, WavTextDataset, LibriDataset, SpecAugmentation, SpecAugmentationConfig
-from StreamASRLib.model import CustomWavTokenizer
+from StreamASRLib.model import CustomWavTokenizer, WavQwenModel
 
 
 WANDB_TOKEN = os.environ['WANDB_TOKEN']
 os.environ['WANDB_PROJECT'] = 'Qwen05b-hf-full-train'
 # os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-# Set config
-QWEN_REPO = 'Qwen/Qwen2.5-0.5B'
-
-EOS_TOKEN = 151643
-PADDING_TOKEN = EOS_TOKEN
-AUDIO_TOKENS = 4096
-AUDIO_TOKEN_THRESHOLD = 151936
-BOA_TOKEN = AUDIO_TOKEN_THRESHOLD + AUDIO_TOKENS
-EOA_TOKEN = BOA_TOKEN + 1
-EXT_TOKENS = AUDIO_TOKENS + 2
 
 # Set torch seed
 torch.manual_seed(42)
@@ -81,10 +70,10 @@ def load_train_ds(
         tokenizer=tokenizer,
         librispeech_dataset=train_ds,
         spec_augmentation=augmentation,
-        eos_token=EOS_TOKEN,
-        boa_token=BOA_TOKEN,
-        eoa_token=EOA_TOKEN,
-        audio_token_threshold=AUDIO_TOKEN_THRESHOLD,
+        eos_token=WavQwenModel.EOS_TOKEN,
+        boa_token=WavQwenModel.BOA_TOKEN,
+        eoa_token=WavQwenModel.EOA_TOKEN,
+        audio_token_threshold=WavQwenModel.AUDIO_TOKEN_THRESHOLD,
         drop_tokens=drop_tokens,
         drop_token_prob=drop_tokens_p,
         add_text=False
@@ -113,10 +102,10 @@ def load_val_ds(
         tokenizer=tokenizer,
         librispeech_dataset=val_clean_ds,
         spec_augmentation=lambda wav: wav,
-        eos_token=EOS_TOKEN,
-        boa_token=BOA_TOKEN,
-        eoa_token=EOA_TOKEN,
-        audio_token_threshold=AUDIO_TOKEN_THRESHOLD,
+        eos_token=WavQwenModel.EOS_TOKEN,
+        boa_token=WavQwenModel.BOA_TOKEN,
+        eoa_token=WavQwenModel.EOA_TOKEN,
+        audio_token_threshold=WavQwenModel.AUDIO_TOKEN_THRESHOLD,
         drop_tokens=False,
         drop_token_prob=0.0,
         add_text=False
@@ -127,32 +116,6 @@ def load_val_ds(
 def build_ref_seq(tokenizer, output: torch.Tensor) -> str:
     tokens = torch.argmax(output, dim=-1)
     return tokenizer.decode(tokens.cpu())
-
-
-class ExtendedEmbedding(nn.Module):
-    '''
-    Custom embedding class for wav-tokens
-    '''
-
-    def __init__(self, base_emb: nn.Embedding, ext_tokens_size: int, ext_token_threshold: int):
-        super().__init__()
-        self.base_emb = base_emb
-        self.hidden_size = base_emb.embedding_dim
-        self.ext_emb = nn.Embedding(ext_tokens_size, self.hidden_size)
-        self.ext_token_threshold = ext_token_threshold
-
-    def freeze_base_emb(self):
-        for param in self.base_emb.parameters():
-            param.requires_grad = False
-
-    def forward(self, input_tokens: torch.Tensor) -> torch.Tensor:
-        ext_token_mask = (input_tokens >= self.ext_token_threshold)
-        inp_emb = torch.zeros(list(
-            input_tokens.shape) + [self.hidden_size], requires_grad=True).to(self.base_emb.weight.device)
-        inp_emb[~ext_token_mask] = self.base_emb(input_tokens[~ext_token_mask])
-        inp_emb[ext_token_mask] = self.ext_emb(
-            input_tokens[ext_token_mask] - self.ext_token_threshold)
-        return inp_emb
 
 
 class CustomTrainer(Trainer):
@@ -235,7 +198,7 @@ class WandbProgressCallback(WandbCallback):
             predicted_ = self.tokenizer.decode(
                 np.argmax(output.predictions[i, (text_start - 1):(text_end - 1), :], axis=-1))
             audio_ = self.wav_tokenizer.decode(
-                sample['input_ids'][audio_start:audio_end] - AUDIO_TOKEN_THRESHOLD).numpy()
+                sample['input_ids'][audio_start:audio_end] - WavQwenModel.AUDIO_TOKEN_THRESHOLD).numpy()
             target_ = self.tokenizer.decode(
                 sample['input_ids'][text_start:text_end])
             predicted.append(predicted_)
@@ -280,34 +243,40 @@ def main():
     parser.add_argument(
         '--wav-tokenizer-config', default='/home/netkex/models/WavTokenizer/wavtokenizer_smalldata_frame40_3s_nq1_code4096_dim512_kmeans200_attn.yaml', type=str)
     parser.add_argument(
-        '--wav-tokenizer-model', default='/home/netkex/models/WavTokenizer//wavtokenizer_large_unify_600_24k.ckpt', type=str)
+        '--wav-tokenizer-model', default='/home/netkex/models/WavTokenizer/wavtokenizer_large_unify_600_24k.ckpt', type=str)
     parser.add_argument(
         '--val-length', default=250, type=int)
     parser.add_argument(
-        '--cut-length', default=300, type=int)
+        '--cut-length', default=280, type=int)
     parser.add_argument(
-        '--run-name', default='iteration-0', type=str)
+        '--run-name', default='tune-exp-0', type=str)
     parser.add_argument(
         '--output-dir', default='/home/netkex/outputs/qwen05-train-40-tks-aug', type=str)
     parser.add_argument(
         '--max-steps', default=20_000, type=int)
+    parser.add_argument(
+        '--checkpoint', default=None, type=str)
+    parser.add_argument(
+        '--notes', default=None, type=str)
     args = parser.parse_args()
 
     # Prepare datasets
     print("Loading datasets")
-    tokenizer = AutoTokenizer.from_pretrained(QWEN_REPO, use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        WavQwenModel.QWEN_REPO, use_fast=True)
     wav_tokenizer = CustomWavTokenizer(
         args.wav_tokenizer_config, args.wav_tokenizer_model, device='cpu')
     augmentation_config = SpecAugmentationConfig(
-        apply_aug_p=0.75,
+        apply_aug_p=0.5,
         apply_speed=True,
-        speed_p=0.5,
+        speed_p=0.3,
         apply_masking=True,
-        masking_p=0.5,
-        freq_mask_param=150,
+        masking_p=0.3,
+        freq_mask_param=100,
         apply_noise=True,
-        noise_p=0.5,
-        noise_snr=32
+        noise_p=0.3,
+        noise_std=0.005,
+        noise_snr=35,
     )
     augmentation = SpecAugmentation(n_fft=1024, config=augmentation_config)
 
@@ -318,7 +287,10 @@ def main():
         wav_tokenizer,
         tokenizer,
         augmentation,
-        args.cut_length)
+        args.cut_length,
+        True,
+        0.005
+    )
     val_ds = load_val_ds(
         args.librispeech_test_clean,
         wav_tokenizer,
@@ -329,13 +301,11 @@ def main():
 
     # Load model
     print('Loading model')
-    qwen_model = AutoModelForCausalLM.from_pretrained(QWEN_REPO)
-    base_emb = qwen_model.model.embed_tokens
-    ext_emb = ExtendedEmbedding(base_emb, EXT_TOKENS, AUDIO_TOKEN_THRESHOLD)
-    # ext_emb.freeze_base_emb()
-    qwen_model.model.embed_tokens = ext_emb
-
-    qwen_model.train()
+    if args.checkpoint is not None:
+        qwen_model = WavQwenModel.load_checkpoint(args.checkpoint)
+    else:
+        qwen_model = WavQwenModel.init()
+    qwen_model.model.train()
 
     # does not work with multiple GPU
     # qwen_model.gradient_checkpointing_enable(
@@ -347,8 +317,9 @@ def main():
         project="Qwen05b-wav-40ts-aug-train",
         config={},
         name=args.run_name,
+        notes=args.notes,
         # disable system logging
-        settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
+        # settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
     )
 
     # Train model
@@ -371,7 +342,7 @@ def main():
     )
 
     trainer = CustomTrainer(
-        model=qwen_model,
+        model=qwen_model.model,
         args=train_args,
         data_collator=DataCollatorWithPadding(tokenizer),
         train_dataset=train_ds, eval_dataset=val_ds,
