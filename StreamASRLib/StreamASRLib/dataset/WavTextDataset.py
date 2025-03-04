@@ -13,6 +13,7 @@ class WavTextDataset:
                  audio_token_threshold: int,
                  drop_tokens: bool = False,
                  drop_token_prob: float = 0.0,
+                 drop_token_length: int = 0,
                  void_token: int = 2548,
                  add_text: bool = False
                  ):
@@ -28,6 +29,7 @@ class WavTextDataset:
 
         self.drop_tokens = drop_tokens
         self.drop_token_prob = drop_token_prob
+        self.drop_token_length = drop_token_length
         self.void_token = void_token
         self.add_text = add_text
 
@@ -35,38 +37,48 @@ class WavTextDataset:
         return len(self.librispeech_dataset)
 
     def _drop_tokens(self, wav_tokens: torch.Tensor) -> torch.Tensor:
-        if not self.drop_tokens:
+        if not self.drop_tokens or wav_tokens.shape[-1] <= self.drop_token_length:
             return wav_tokens
-        drop_msk = torch.rand(wav_tokens.shape) < self.drop_token_prob
+
+        if torch.rand(1).item() > self.drop_token_prob:
+            return wav_tokens
+
+        start_tokens = torch.randint(
+            wav_tokens.shape[-1] - self.drop_token_length, size=(1,)).item()
+        # print(f'Dropped tokens from {start_tokens}')
         masked_wav_tokens = wav_tokens.clone()
-        masked_wav_tokens[drop_msk] = self.void_token
+        masked_wav_tokens[..., start_tokens:start_tokens +
+                          self.drop_token_length] = self.void_token
         return masked_wav_tokens
 
     def __getitem__(self, id):
-        audio_item = self.librispeech_dataset[id]
-        wav, sr = audio_item['audio'].flatten(), audio_item['sr']
-        aug_wav = self.spec_augmentation(wav)
-        wav_tokens = self.wav_model.tokenize(aug_wav, sr).cpu()
-        aug_wav_tokens = self._drop_tokens(wav_tokens)
-        text_tokens = self.tokenizer(
-            audio_item['text'], add_special_tokens=False, return_tensors='pt').input_ids.flatten()
+        try:
+            audio_item = self.librispeech_dataset[id]
+            wav, sr = audio_item['audio'].flatten(), audio_item['sr']
+            aug_wav = self.spec_augmentation(wav)
+            wav_tokens = self.wav_model.tokenize(aug_wav, sr).cpu()
+            aug_wav_tokens = self._drop_tokens(wav_tokens)
+            text_tokens = self.tokenizer(
+                audio_item['text'], add_special_tokens=False, return_tensors='pt').input_ids.flatten()
 
-        input_ids = torch.concatenate((
-            torch.tensor([self.boa_token]),
-            self.audio_token_threshold + aug_wav_tokens,
-            torch.tensor([self.eoa_token]),
-            text_tokens,
-            torch.tensor([self.eos_token])
-        ), 0)
-        attention_mask = torch.ones_like(input_ids)
-        text_start = 2 + aug_wav_tokens.shape[0]
-        text_end = input_ids.shape[0]
-        res = {
-            'input_ids': input_ids,
-            'attention_mask': attention_mask,
-            'label_text_start': text_start,
-            'label_text_end': text_end
-        }
-        if self.add_text:
-            res['text'] = audio_item['text']
-        return res
+            input_ids = torch.concatenate((
+                torch.tensor([self.boa_token]),
+                self.audio_token_threshold + aug_wav_tokens,
+                torch.tensor([self.eoa_token]),
+                text_tokens,
+                torch.tensor([self.eos_token])
+            ), 0)
+            attention_mask = torch.ones_like(input_ids)
+            text_start = 2 + aug_wav_tokens.shape[0]
+            text_end = input_ids.shape[0]
+            res = {
+                'input_ids': input_ids,
+                'attention_mask': attention_mask,
+                'label_text_start': text_start,
+                'label_text_end': text_end
+            }
+            if self.add_text:
+                res['text'] = audio_item['text']
+            return res
+        except Exception as e:
+            print(f'Exception "{e}" at index {id}')
