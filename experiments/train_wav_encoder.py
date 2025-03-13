@@ -2,11 +2,12 @@ import argparse
 import copy
 import json
 import os
+import gc
 from typing import List
 
 import datasets
 import torch
-import torch.functional as F
+import torch.nn.functional as F
 import torch.nn as nn
 from datasets import load_from_disk
 from munch import Munch
@@ -34,22 +35,52 @@ AUDIO_PADDING_TOKEN = EOA_TOKEN
 AUDIO_TOKENS = WAV_TOKENS + 2
 
 
-def colBertScore(audio_emb: torch.Tensor, text_emb: torch.Tensor) -> torch.Tensor:
+def colBertScore(
+        audio_emb: torch.Tensor,
+        text_emb: torch.Tensor,
+        audio_mask: torch.Tensor = None,
+        text_mask: torch.Tensor = None
+) -> torch.Tensor:
     '''
         audio_emb has shape (batch_size, audio_seq_len, emb_dim)
 
         text_emb has shape (batch_size, text_seq_len, emb_dim)
 
+        audio_mask has shape (batch_size, audio_seq_len) — mask of real audio tokens (without padding)
+
+        text_mask has shape (batch_size, text_seq_len) - mask of real text tokens (without padding)
+
         Returns tensor of col bert score of shape (batch_size,)
     '''
+
+    audio_emb = F.normalize(audio_emb, dim=-1)
+    text_emb = F.normalize(text_emb, dim=-1)
+
     text_emb_T = text_emb.transpose(-1, -2)
-    max_similarity, _ = (audio_emb @ text_emb_T).max(dim=-1)
+    similarity = audio_emb @ text_emb_T
+
+    if text_mask is not None:
+        text_coef = torch.ones_like(text_mask).to(similarity.device)
+        text_coef[~text_mask] = -torch.inf
+        similarity = similarity * text_coef[:, None, :]
+
+    # max_similarity: (batch_size, audio_seq_len)
+    max_similarity, _ = similarity.max(dim=-1)
+    if audio_mask is not None:
+        max_similarity[~audio_mask.to(max_similarity.device)] = 0
 
     # In original col bert, the sum of max similirarity is taken instead of mean
     return max_similarity.sum(dim=-1)
 
 
-def colBertTripletLoss(audio_emb: torch.Tensor, text_pos_emb: torch.Tensor, text_neg_emb: torch.Tensor) -> torch.Tensor:
+def colBertTripletLoss(
+        audio_emb: torch.Tensor,
+        text_pos_emb: torch.Tensor,
+        text_neg_emb: torch.Tensor,
+        audio_mask: torch.Tensor = None,
+        text_pos_mask: torch.Tensor = None,
+        text_neg_mask: torch.Tensor = None
+) -> torch.Tensor:
     '''
         audio_emb has shape (batch_size, audio_seq_len, emb_dim)
 
@@ -59,10 +90,14 @@ def colBertTripletLoss(audio_emb: torch.Tensor, text_pos_emb: torch.Tensor, text
 
         Returns loss of the batch
     '''
-    pos_score = colBertScore(audio_emb, text_pos_emb)
-    neg_score = colBertScore(audio_emb, text_neg_emb)
-    logits = torch.concatenate((neg_score, pos_score), dim=-1)
-    loss = nn.CrossEntropyLoss()(logits, torch.tensor(1).to(logits.device))
+    pos_score = colBertScore(audio_emb, text_pos_emb,
+                             audio_mask, text_pos_mask)
+    neg_score = colBertScore(audio_emb, text_neg_emb,
+                             audio_mask, text_neg_mask)
+    logits = torch.concatenate(
+        (neg_score.reshape((-1, 1)), pos_score.reshape(-1, 1)), dim=-1)
+    target = torch.ones((logits.shape[0]), dtype=torch.long).to(logits.device)
+    loss = nn.CrossEntropyLoss()(logits, target)
     return loss
 
 
@@ -87,8 +122,8 @@ def get_qwen_emb(qwen_emb, tokens):
     return qwen_emb(tokens)
 
 
-def report_loss(step: int, loss: float):
-    log = {'train_loss': loss}
+def report_loss(step: int, loss: float, grad_norm: float):
+    log = {'train_loss': loss, 'grad_norm': grad_norm}
     wandb.log(log, step=step)
 
 
@@ -116,21 +151,28 @@ def report_sample(
 
 class DummyTripletSampler:
     class TripletDatasetWrapper(Dataset):
-        def __init__(self, p_ds, n_ds):
+        def __init__(self, p_ds, n_ds, max_len_a=1024, max_len_t=512):
             '''
             p_ds, n_ds return dict with keys "wav-tokens" and "qwen-tokens"
             '''
             super().__init__()
             self.p_ds = p_ds
             self.n_ds = n_ds
+            self.indexes = [
+                idx
+                for idx in range(len(self.p_ds)) if len(self.p_ds[idx]['wav-tokens']) < max_len_a and
+                len(self.p_ds[idx]['qwen-tokens']) < max_len_t and
+                len(self.n_ds[idx]['qwen-tokens']) < max_len_t
+            ]
 
         def __len__(self):
-            return len(self.p_ds)
+            return len(self.indexes)
 
         def __getitem__(self, item):
-            wav_tokens = self.p_ds[item]['wav-tokens']
-            pos_tokens = self.p_ds[item]['qwen-tokens']
-            neg_tokens = self.n_ds[item]['qwen-tokens']
+            idx = self.indexes[item]
+            wav_tokens = self.p_ds[idx]['wav-tokens']
+            pos_tokens = self.p_ds[idx]['qwen-tokens']
+            neg_tokens = self.n_ds[idx]['qwen-tokens']
             return (torch.tensor([BOA_TOKEN] + wav_tokens + [EOA_TOKEN]), torch.tensor(pos_tokens), torch.tensor(neg_tokens))
 
     def __init__(self, dataset, sample_size: int = 50_000):
@@ -149,7 +191,7 @@ class DummyTripletSampler:
 
 
 def tokens_padding(tensors: List[torch.Tensor], pad_token: int) -> torch.Tensor:
-    max_length = max(item.shape[0] for item in tensors)
+    max_length = max([item.shape[0] for item in tensors])
     pad_tensor = torch.full((len(tensors), max_length), pad_token)
     for i, item in enumerate(tensors):
         pad_tensor[i, :item.shape[0]] = item
@@ -182,24 +224,33 @@ def main():
             config.model.load_checkpoint, AUDIO_TOKENS, QWEN_EMB_SIZE, config.model.num_layers)
     else:
         model = WavTokensEncoder(
-            AUDIO_TOKENS, QWEN_EMB_SIZE, config.model.num_layers, add_rope=False)
+            AUDIO_TOKENS, QWEN_EMB_SIZE, config.model.num_layers, add_rope=True)
     model = model.to(device)
     model.train()
-    opt = torch.optim.Adam(model.parameters(), config.opt.lr)
+    opt = torch.optim.Adam(model.parameters(), config.opt.warmup_lr)
 
-    print('Initialising W&B')
-    wandb.login(key=WANDB_TOKEN)
-    wandb.init(
-        project=config.wandb.project,
-        config={},
-        name=config.wandb.run_name,
-        # disable system logging
-        settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
-    )
+    if config.wandb.enabled:
+        print('Initialising W&B')
+        wandb.login(key=WANDB_TOKEN)
+        wandb.init(
+            project=config.wandb.project,
+            config={},
+            name=config.wandb.run_name,
+            # disable system logging
+            settings=wandb.Settings(_disable_stats=True, _disable_meta=True)
+        )
+    else:
+        print('Warning: wandb is not enabled')
 
     print('Start training')
-    triplet_sampler = DummyTripletSampler(train_dataset)
+    triplet_sampler = DummyTripletSampler(train_dataset, sample_size=33_000)
+
+    warmup = True
     step = 0
+
+    last_loss = None
+    best_loss = None
+
     for epoch in range(config.train.epoches):
         print(f'Start epoch {epoch}')
         triplet_ds = triplet_sampler.generate_new_dataset()
@@ -207,52 +258,79 @@ def main():
             triplet_ds,
             batch_size=config.train.batch_size,
             collate_fn=triplet_collate_fn,
-            shuffle=True,
+            shuffle=False,
             num_workers=config.train.dl_workers
         )
 
-        loss = 0
-        last_loss = None
-        best_loss = None
-        accumulated = 0
-
         model.train()
-        opt.zero_grad()
+        global_batch = []
         for batch in tqdm(triplet_dataloader):
-            wav_emb = model(batch[0].to(device))
-            text_pos_emb = get_qwen_emb(qwen_emb, batch[1]).to(device)
-            text_neg_emb = get_qwen_emb(qwen_emb, batch[2]).to(device)
+            print(batch[0].shape)
+            print(batch[1].shape)
+            print(batch[2].shape)
+            global_batch.append(batch)
 
-            batch_loss = colBertTripletLoss(
-                wav_emb, text_pos_emb, text_neg_emb) / config.train.gradient_accumulation_steps
-            batch_loss.backward()
+            if len(global_batch) != config.train.gradient_accumulation_steps:
+                continue
 
-            loss += batch_loss.item()
-            accumulated += 1
-            step += 1
-
-            if accumulated == config.train.gradient_accumulation_steps:
-                opt.step()
+            for r in range(config.train.repeat_batch):
                 opt.zero_grad()
+                loss = 0
+                for batch in global_batch:
+                    wav_emb = model(batch[0].to(device))
+                    text_pos_emb = get_qwen_emb(
+                        qwen_emb, batch[1]).to(device)
+                    text_neg_emb = get_qwen_emb(
+                        qwen_emb, batch[2]).to(device)
 
-                accumulated = 0
-                print(f'Step {step} loss: {loss}')
-                report_loss(
-                    step // config.train.gradient_accumulation_steps, loss)
+                    audio_mask = (batch[0] != AUDIO_PADDING_TOKEN)
+                    text_pos_mask = (batch[1] != TEXT_PADDING_TOKEN)
+                    text_neg_mask = (batch[2] != TEXT_PADDING_TOKEN)
+
+                    batch_loss = 1 / config.train.gradient_accumulation_steps * colBertTripletLoss(
+                        wav_emb, text_pos_emb, text_neg_emb,
+                        audio_mask, text_pos_mask, text_neg_mask
+                    )
+                    batch_loss.backward()
+                    loss += batch_loss.item()
+
+                grad_norm = torch.sqrt(
+                    sum([torch.norm(param.grad)**2 for param in model.parameters()]))
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), config.train.grad_clip)
+                opt.step()
+                torch.cuda.empty_cache()
+                step += 1
+
+                if warmup and step == config.opt.warmup_steps:
+                    warmup = False
+                    for group in opt.param_groups:
+                        group['lr'] = config.opt.lr
+
+                print(f'step {step}; loss: {loss}; grad_norm: {grad_norm}')
+                if config.wandb.enabled:
+                    report_loss(step, loss, grad_norm)
                 last_loss = loss
                 loss = 0
 
-            if step > 0 and step % config.log.sample_freq == 0:
-                pos_score = colBertScore(wav_emb, text_pos_emb)
-                neg_score = colBertScore(wav_emb, text_neg_emb)
-                pos_text = [tokenizer.decode(item) for item in batch[1]]
-                neg_text = [tokenizer.decode(item) for item in batch[2]]
-                report_sample(pos_text, neg_text, pos_score, neg_score)
+                if step > 0 and step % config.log.sample_freq == 0:
+                    pos_score = colBertScore(
+                        wav_emb, text_pos_emb, audio_mask, text_pos_mask)
+                    neg_score = colBertScore(
+                        wav_emb, text_neg_emb, audio_mask, text_neg_mask)
+                    pos_text = [tokenizer.decode(item) for item in batch[1]]
+                    neg_text = [tokenizer.decode(item) for item in batch[2]]
+                    if config.wandb.enabled:
+                        report_sample(pos_text, neg_text,
+                                      pos_score, neg_score, 32)
 
-            if step > 0 and step % config.train.save_freq == 0:
-                model.save(config.train.save_checkpoint_path)
-                if best_loss is None or best_loss > last_loss:
-                    model.save(config.train.best_checkpoint_path)
+                if step > 0 and step % config.train.save_freq == 0:
+                    model.save(config.train.save_checkpoint_path)
+                    if best_loss is None or best_loss > last_loss:
+                        model.save(config.train.best_checkpoint_path)
+
+            gc.collect()
+            global_batch = []
 
 
 if __name__ == '__main__':
