@@ -56,7 +56,6 @@ class WavTokensEncoder(nn.Module):
                  num_heads: int = 4,
                  add_rope: bool = True,
                  proj_size: int = None):
-        nn.Transformer
         super().__init__()
         self.embedding = nn.Embedding(num_tokens, hidden_size)
 
@@ -71,8 +70,9 @@ class WavTokensEncoder(nn.Module):
             hidden_size, proj_size) if proj_size is not None else nn.Identity()
 
     def forward(self, input: torch.Tensor, attn_mask: torch.Tensor = None) -> torch.Tensor:
-        if attn_mask is None:
-            attn_mask = torch.full((input.shape[-1], input.shape[-1]), True)
+        # if attn_mask is None:
+        #     attn_mask = torch.full(
+        #         (input.shape[-1], input.shape[-1]), True).to(input.device)
 
         x = self.embedding(input)
         for l_id in range(self.num_layers):
@@ -83,6 +83,7 @@ class WavTokensEncoder(nn.Module):
         torch.save(self.state_dict(), path)
 
     @classmethod
-    def load(cls, path: str, num_tokens: int, hidden_size: int, num_layers: int, proj_size: int = None):
-        model = cls(num_tokens, hidden_size, num_layers, proj_size)
+    def load(cls, path: str, **kwargs):
+        model = cls(**kwargs)
         model.load_state_dict(torch.load(path, weights_only=True))
+        return model
