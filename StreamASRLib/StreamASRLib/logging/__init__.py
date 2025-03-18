@@ -1,1 +1,1 @@
-from WandbAudioSampleCallback import WandbAudioSampleCallback
+from .WandbAudioSampleCallback import WandbAudioSampleCallback
