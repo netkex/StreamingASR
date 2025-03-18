@@ -1,6 +1,7 @@
 from .config import DEVICE
 from .ASRBaseModel import ASRBaseModel
 from .CustomWavTokenizer import CustomWavTokenizer
-from .WavQwenModel import ExtendedEmbedding, WavQwenModel
+from .WavQwenBaseModel import WavQwenBaseModel
+from .WavQwenModelRawEmb import ExtendedEmbedding, WavQwenModelRawEmb
 from .WavTokensEncoder import WavTokensEncoder
 from .WavQwenModelWithEncoder import WavQwenModelWithEncoder

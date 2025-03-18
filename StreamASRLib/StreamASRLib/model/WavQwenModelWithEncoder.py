@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 from safetensors import safe_open
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from StreamASRLib.model import WavTokensEncoder
+from StreamASRLib.model import WavQwenBaseModel, WavTokensEncoder
 
 
 class EmbeddingWithEncoder(nn.Module):
@@ -38,20 +38,18 @@ class EmbeddingWithEncoder(nn.Module):
         return inp_emb
 
 
-class WavQwenModelWithEncoder:
-    QWEN_REPO = 'Qwen/Qwen2.5-0.5B'
-    EOS_TOKEN = 151643                               # taken from qwen tokenizer
-    AUDIO_TOKENS = 4096                              # taken from wav tokenizer doc
-    AUDIO_TOKEN_THRESHOLD = 151936                   # taken from qwen tokenizer
-    PADDING_TOKEN = EOS_TOKEN
-    BOA_TOKEN = AUDIO_TOKEN_THRESHOLD + AUDIO_TOKENS
-    EOA_TOKEN = BOA_TOKEN + 1
-    EXT_TOKENS = AUDIO_TOKENS + 2
-
+class WavQwenModelWithEncoder(WavQwenBaseModel):
     def __init__(self, model, fast_tokenizer=True):
+        super().__init__()
         self.model = model
         self.tokenizer = AutoTokenizer.from_pretrained(
             WavQwenModelWithEncoder.QWEN_REPO, use_fast=fast_tokenizer)
+
+    def tokenizer(self):
+        return self.tokenizer
+
+    def model(self):
+        return self.model
 
     def freeze_qwen(self):
         for parameter in self.model.model.parameters():

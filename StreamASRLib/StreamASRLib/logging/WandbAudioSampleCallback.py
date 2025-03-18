@@ -4,7 +4,7 @@ import wandb
 from transformers import AutoTokenizer, Trainer
 from transformers.integrations import WandbCallback
 
-from StreamASRLib.model import CustomWavTokenizer, WavQwenModel
+from StreamASRLib.model import CustomWavTokenizer, WavQwenBaseModel
 
 
 class WandbAudioSampleCallback(WandbCallback):
@@ -15,7 +15,7 @@ class WandbAudioSampleCallback(WandbCallback):
                  train_dataset,
                  val_dataset,
                  num_samples: int = 10,
-                 audio_token_threshold: int = WavQwenModel.AUDIO_TOKEN_THRESHOLD):
+                 audio_token_threshold: int = WavQwenBaseModel.AUDIO_TOKEN_THRESHOLD):
         super().__init__()
         self.trainer = trainer
         self.tokenizer = tokenizer
