@@ -5,7 +5,7 @@ from torchtune.modules import RotaryPositionalEmbeddings
 
 
 class AttentionBlockWithRope(nn.Module):
-    def __init__(self, emb_dim: int, hidden_dim: int, num_heads: int = 4, bottle_neck: int = 64):
+    def __init__(self, emb_dim: int, hidden_dim: int, num_heads: int = 4, bottle_neck: int = 1024):
         super().__init__()
 
         self.hidden_dim = hidden_dim
@@ -22,9 +22,10 @@ class AttentionBlockWithRope(nn.Module):
             hidden_dim, emb_dim) if hidden_dim != emb_dim else nn.Identity()
         self.ffn = nn.Sequential(
             nn.Linear(emb_dim, bottle_neck),
+            nn.ReLU(),
             nn.Linear(bottle_neck, emb_dim)
         )
-
+        # self.attn_norm = nn.LayerNorm(emb_dim)
         self.norm = nn.LayerNorm(emb_dim)
 
     def forward(self, input: torch.Tensor, rope: RotaryPositionalEmbeddings = None, attn_mask: torch.Tensor = None) -> torch.Tensor:
@@ -43,6 +44,10 @@ class AttentionBlockWithRope(nn.Module):
 
         attn, _ = self.multi_head_attn(
             query, key, value, need_weights=False, attn_mask=attn_mask)
+
+        # x = self.attn_norm(input + attn)
+        # return self.norm(x + self.ffn(x))
+
         ffn_attn = self.ffn(self.out_proj(attn))
         res = self.norm(input + ffn_attn)
         return res
@@ -66,8 +71,9 @@ class WavTokensEncoder(nn.Module):
             AttentionBlockWithRope(hidden_size, hidden_size, num_heads)
             for _ in range(num_layers)
         ])
-        self.proj = nn.Linear(
-            hidden_size, proj_size) if proj_size is not None else nn.Identity()
+        if proj_size is None:
+            proj_size = hidden_size
+        self.proj = nn.Linear(hidden_size, proj_size)
 
     def forward(self, input: torch.Tensor, attn_mask: torch.Tensor = None) -> torch.Tensor:
         # if attn_mask is None:
