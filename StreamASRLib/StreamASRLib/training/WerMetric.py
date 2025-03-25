@@ -1,6 +1,6 @@
 import numpy as np
 from transformers import EvalPrediction
-from utils import build_ref_seq
+from .utils import build_ref_seq
 
 from StreamASRLib.eval import calculate_wer
 
