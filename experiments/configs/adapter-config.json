@@ -1,0 +1,33 @@
+{
+    "dataset": {
+        "librispeech_train": "/home/netkex/datasets/custom/librispeech-train-40tks-raw"
+    },
+    "model": {
+        "num_layers": 6
+    },
+    "opt": {
+        "warmup_lr": 1e-4,
+        "warmup_steps": 100,
+        "lr": 3e-4
+    },
+    "wandb": {
+        "enabled": true,
+        "project": "Wav-Tokens-Adapter-40tks",
+        "run_name": "6-layers-matrix-loss-bf16 (b: 128x32;)",
+        "notes": "normal lr; cut transformer architecture"
+    },
+    "train": {
+        "epoches": 1000,
+        "batch_size": 128,
+        "gradient_accumulation_steps": 32,
+        "dl_workers": 8,
+        "save_freq": 50,
+        "grad_clip": 1.0,
+        "save_checkpoint_path": "/home/netkex/outputs/train-encoder/exp-04.pt",
+        "save_best_checkpoint_path": "/home/netkex/outputs/train-encoder/best-exp-04.pt"
+    },
+    "log": {
+        "sample_freq": 25,
+        "num_samples": 10
+    }
+}
