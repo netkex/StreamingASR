@@ -187,3 +187,4 @@ fabric.properties
 **/.DS_Store
 
 **/wandb/
+**/history
