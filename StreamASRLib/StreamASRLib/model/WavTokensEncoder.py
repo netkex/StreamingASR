@@ -5,12 +5,18 @@ from torchtune.modules import RotaryPositionalEmbeddings
 
 
 class AttentionBlockWithRope(nn.Module):
-    def __init__(self, emb_dim: int, hidden_dim: int, num_heads: int = 4, bottle_neck: int = 1024):
+    def __init__(self,
+                 emb_dim: int,
+                 hidden_dim: int,
+                 num_heads: int = 4,
+                 bottle_neck: int = 1024,
+                 is_causal: bool = True):
         super().__init__()
 
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
         self.head_dim = hidden_dim // num_heads
+        self.is_causal = is_causal
 
         self.k_proj = nn.Linear(emb_dim, hidden_dim)
         self.q_proj = nn.Linear(emb_dim, hidden_dim)
@@ -20,15 +26,21 @@ class AttentionBlockWithRope(nn.Module):
 
         self.out_proj = nn.Linear(
             hidden_dim, emb_dim) if hidden_dim != emb_dim else nn.Identity()
+        self.attn_ffn = nn.Sequential(
+            nn.Linear(emb_dim, bottle_neck),
+            nn.ReLU(),
+            nn.Linear(bottle_neck, emb_dim)
+        )
+        self.attn_norm = nn.RMSNorm(emb_dim)
+
         self.ffn = nn.Sequential(
             nn.Linear(emb_dim, bottle_neck),
             nn.ReLU(),
             nn.Linear(bottle_neck, emb_dim)
         )
-        # self.attn_norm = nn.LayerNorm(emb_dim)
-        self.norm = nn.LayerNorm(emb_dim)
+        self.norm = nn.RMSNorm(emb_dim)
 
-    def forward(self, input: torch.Tensor, rope: RotaryPositionalEmbeddings = None, attn_mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, input: torch.Tensor, rope: RotaryPositionalEmbeddings = None) -> torch.Tensor:
         key = self.k_proj(input)
         query = self.q_proj(input)
         value = self.v_proj(input)
@@ -42,15 +54,24 @@ class AttentionBlockWithRope(nn.Module):
             query = rot_query.reshape(query.shape)
             key = rot_key.reshape(key.shape)
 
-        attn, _ = self.multi_head_attn(
-            query, key, value, need_weights=False, attn_mask=attn_mask)
+        if self.is_causal:
+            attn_mask = nn.Transformer.generate_square_subsequent_mask(
+                key.shape[-2], key.device)
+            attn, _ = self.multi_head_attn(
+                query, key, value, need_weights=False, attn_mask=attn_mask, is_causal=True)
+        else:
+            attn, _ = self.multi_head_attn(
+                query, key, value, need_weights=False, is_causal=False)
+
+        x = self.attn_norm(input + self.attn_ffn(attn))
+        return self.norm(x + self.ffn(x))
 
         # x = self.attn_norm(input + attn)
         # return self.norm(x + self.ffn(x))
 
-        ffn_attn = self.ffn(self.out_proj(attn))
-        res = self.norm(input + ffn_attn)
-        return res
+        # ffn_attn = self.ffn(self.out_proj(attn))
+        # res = self.norm(input + ffn_attn)
+        # return res
 
 
 class WavTokensEncoder(nn.Module):
@@ -60,6 +81,7 @@ class WavTokensEncoder(nn.Module):
                  num_layers: int,
                  num_heads: int = 4,
                  add_rope: bool = True,
+                 is_causal: bool = True,
                  proj_size: int = None):
         super().__init__()
         self.embedding = nn.Embedding(num_tokens, hidden_size)
@@ -68,21 +90,22 @@ class WavTokensEncoder(nn.Module):
         self.rope = RotaryPositionalEmbeddings(
             hidden_size // num_heads) if add_rope else None
         self.encoder = nn.ModuleList([
-            AttentionBlockWithRope(hidden_size, hidden_size, num_heads)
+            AttentionBlockWithRope(
+                hidden_size, hidden_size, num_heads, is_causal=is_causal)
             for _ in range(num_layers)
         ])
         if proj_size is None:
             proj_size = hidden_size
         self.proj = nn.Linear(hidden_size, proj_size)
 
-    def forward(self, input: torch.Tensor, attn_mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         # if attn_mask is None:
         #     attn_mask = torch.full(
         #         (input.shape[-1], input.shape[-1]), True).to(input.device)
 
         x = self.embedding(input)
         for l_id in range(self.num_layers):
-            x = self.encoder[l_id](x, rope=self.rope, attn_mask=attn_mask)
+            x = self.encoder[l_id](x, rope=self.rope)
         return self.proj(x)
 
     def save(self, path: str):
