@@ -76,12 +76,14 @@ class CTC:
                  qwen_embeddings: torch.Tensor,
                  qwen_tokens_mapping: torch.Tensor,
                  blank_emb: BlankEmb,
+                 temp: float = 0.01,
                  device=device):
         self.blank_id = qwen_embeddings.shape[0]
         self.ctc_loss = nn.CTCLoss(blank=self.blank_id)
         self.qwen_embeddings = qwen_embeddings.to(device)
         self.qwen_tokens_mapping = qwen_tokens_mapping.to(device)
         self.blank_emb = blank_emb
+        self.temp = temp
 
     # We need to do log_softmax in fp32 for numerical stability
     # https://discuss.pytorch.org/t/ctc-loss-ctc-loss-not-support-float16/148800/2
@@ -91,7 +93,7 @@ class CTC:
         qwen_embedding_matrix = F.normalize(qwen_embedding_matrix, dim=-1)
         wav_emb = F.normalize(wav_emb, dim=-1)
 
-        raw_logits = (wav_emb @ qwen_embedding_matrix.T)
+        raw_logits = (wav_emb @ qwen_embedding_matrix.T) / self.temp
         raw_logits = F.log_softmax(raw_logits, dim=-1)
         return raw_logits
 
@@ -233,6 +235,7 @@ class Trainer:
                  tokenizer: AutoTokenizer,
                  adapter: WavTokensEncoder,
                  opt_adapter,
+                 opt_scheduler,
                  blank_emb: BlankEmb,
                  opt_blank,
                  ctc: CTC,
@@ -243,6 +246,7 @@ class Trainer:
         self.tokenizer = tokenizer
         self.adapter = adapter
         self.opt_adapter = opt_adapter
+        self.opt_scheduler = opt_scheduler
         self.blank_emb = blank_emb
         self.opt_blank = opt_blank
         self.ctc = ctc
@@ -294,7 +298,7 @@ class Trainer:
 
     def _save_best(self):
         self.adapter.save(self.config.train.adapter_best_checkpoint)
-        self.adapter.save(self.config.train.blank_best_checkpoint)
+        self.blank_emb.save(self.config.train.blank_best_checkpoint)
 
     @torch.no_grad()
     def _validate(self) -> float:
@@ -382,6 +386,8 @@ class Trainer:
             self.blank_emb.parameters(), self.config.train.grad_clip)
 
         self.opt_adapter.step()
+        self.opt_scheduler.step()
+
         self.opt_blank.step()
 
         self.opt_adapter.zero_grad()
@@ -490,7 +496,7 @@ def main():
 
     print('Loading dataset')
     train_dataset = load_from_disk(config.dataset.librispeech_train)
-    train_dataset = LimitedDataset(train_dataset.select(list(range(32))))
+    train_dataset = LimitedDataset(train_dataset.select(list(range(10_000))))
     # train_dataset = LimitedDataset(train_dataset)
 
     val_dataset = load_from_disk(config.dataset.librispeech_test)
@@ -504,16 +510,20 @@ def main():
         adapter = WavTokensEncoder(
             AUDIO_TOKENS, QWEN_EMB_SIZE, config.model.num_layers, add_rope=True)
     adapter = adapter.to(device)
-    opt_adapter = torch.optim.RMSprop(
-        adapter.parameters(), config.opt.warmup_lr)
+    opt_adapter = torch.optim.RMSprop(adapter.parameters(), config.opt.lr)
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+        opt_adapter,
+        start_factor=0.001,
+        end_factor=1.0,
+        total_iters=config.opt.warmup_steps
+    )
 
     if hasattr(config.model, 'blank_checkpoint'):
         raise NotImplementedError('Not supported at the moment')
     else:
         blank_emb = BlankEmb(QWEN_EMB_SIZE)
     blank_emb = blank_emb.to(device)
-    opt_blank = torch.optim.RMSprop(
-        blank_emb.parameters(), config.opt.warmup_lr)
+    opt_blank = torch.optim.RMSprop(blank_emb.parameters(), config.opt.lr)
 
     print(f'Model size: {get_number_of_parameters(adapter)}')
 
@@ -522,7 +532,8 @@ def main():
     qwen_emb = load_qwen_emb()
     qwen_emdebbings, tokens_mapping = prepare_qwen_tokens_with_blank(
         qwen_emb, config.dataset.qwen_tokens, tokenizer)
-    ctc = CTC(qwen_emdebbings, tokens_mapping, blank_emb)
+    ctc = CTC(qwen_emdebbings, tokens_mapping,
+              blank_emb, config.model.ctc_temp)
 
     print('Setting up reporting')
     reporter = Reporter(config, config.wandb.enabled)
@@ -536,6 +547,7 @@ def main():
         tokenizer,
         adapter,
         opt_adapter,
+        warmup_scheduler,
         blank_emb,
         opt_blank,
         ctc,
