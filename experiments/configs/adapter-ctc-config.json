@@ -1,0 +1,39 @@
+{
+    "dataset": {
+        "librispeech_train": "/home/netkex/datasets/custom/librispeech-train-40tks-raw",
+        "librispeech_test": "/home/netkex/datasets/custom/librispeech-test-40tks-raw",
+        "val_size": 512,
+        "qwen_tokens": "/home/netkex/datasets/custom/ctc-tokens.pt"
+    },
+    "model": {
+        "num_layers": 9,
+        "ctc_temp": 0.01
+    },
+    "opt": {
+        "lr": 5e-5,
+        "warmup_steps": 750
+    },
+    "wandb": {
+        "enabled": true,
+        "project": "[CTC] Wav-Tokens-Adapter-40tks",
+        "run_name": "9-layers (Adam)",
+        "notes": "full"
+    },
+    "train": {
+        "epoches": 10000,
+        "batch_size": 8,
+        "gradient_accumulation_steps": 16,
+        "dl_workers": 8,
+        "save_freq": 100,
+        "grad_clip": 3.0,
+        "val_freq": 50,
+        "adapter_checkpoint": "/home/netkex/outputs/train-ctc-encoder/base/adapter-exp-02.pt",
+        "adapter_best_checkpoint": "/home/netkex/outputs/train-ctc-encoder/base/adapter-best-exp-02_.pt",
+        "blank_checkpoint": "/home/netkex/outputs/train-ctc-encoder/base/blank-exp-02_.pt",
+        "blank_best_checkpoint": "/home/netkex/outputs/train-ctc-encoder/base/blank-best-exp-02_.pt"
+    },
+    "log": {
+        "sample_freq": 50,
+        "num_samples": 1
+    }
+}

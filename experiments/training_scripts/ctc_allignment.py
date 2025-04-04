@@ -234,10 +234,9 @@ class Trainer:
                  val_ds: LimitedDataset,
                  tokenizer: AutoTokenizer,
                  adapter: WavTokensEncoder,
-                 opt_adapter,
-                 opt_scheduler,
                  blank_emb: BlankEmb,
-                 opt_blank,
+                 opt,
+                 scheduler,
                  ctc: CTC,
                  reporter: Reporter):
         self.config = config
@@ -245,14 +244,11 @@ class Trainer:
         self.val_ds = val_ds
         self.tokenizer = tokenizer
         self.adapter = adapter
-        self.opt_adapter = opt_adapter
-        self.opt_scheduler = opt_scheduler
         self.blank_emb = blank_emb
-        self.opt_blank = opt_blank
+        self.opt = opt
+        self.scheduler = scheduler
         self.ctc = ctc
         self.reporter = reporter
-
-        self.warmup = True
         self.best_loss = None
         self._setup_dataloaders()
 
@@ -287,10 +283,6 @@ class Trainer:
         if step % self.config.log.sample_freq == 0:
             self._log_train_sample(step, last_wav_emb, last_batch)
             self._log_val_sample(step)
-
-        if self.warmup and step == self.config.opt.warmup_steps:
-            self.warmup = False
-            self._update_warmup_lr()
 
     def _save_models(self):
         self.adapter.save(self.config.train.adapter_checkpoint)
@@ -370,28 +362,25 @@ class Trainer:
     def _log_val_sample(self, step: int):
         pass
 
-    def _update_warmup_lr(self):
-        for group in self.opt_adapter.param_groups:
-            group['lr'] = self.config.opt.lr
-        for group in self.opt_blank.param_groups:
-            group['lr'] = self.config.opt.lr
-
     def _opt_step(self) -> float:
         adapter_grad_norm = calculate_grad_norm(self.adapter)
         blank_grad_norm = calculate_grad_norm(self.blank_emb)
 
         torch.nn.utils.clip_grad_norm_(
-            self.adapter.parameters(), self.config.train.grad_clip)
-        torch.nn.utils.clip_grad_norm_(
-            self.blank_emb.parameters(), self.config.train.grad_clip)
+            list(self.adapter.parameters()) +
+            list(self.blank_emb.parameters()),
+            self.config.train.grad_clip
+        )
 
-        self.opt_adapter.step()
-        self.opt_scheduler.step()
+        # torch.nn.utils.clip_grad_norm_(
+        #     self.adapter.parameters(), self.config.train.grad_clip)
+        # torch.nn.utils.clip_grad_norm_(
+        #     self.blank_emb.parameters(), self.config.train.grad_clip)
 
-        self.opt_blank.step()
+        self.opt.step()
+        self.scheduler.step()
 
-        self.opt_adapter.zero_grad()
-        self.opt_blank.zero_grad()
+        self.opt.zero_grad()
 
         return {'adapter_grad_norm': adapter_grad_norm, 'blank_grad_norm': blank_grad_norm}
 
@@ -496,8 +485,8 @@ def main():
 
     print('Loading dataset')
     train_dataset = load_from_disk(config.dataset.librispeech_train)
-    train_dataset = LimitedDataset(train_dataset.select(list(range(10_000))))
-    # train_dataset = LimitedDataset(train_dataset)
+    # train_dataset = LimitedDataset(train_dataset.select(list(range(10_000))))
+    train_dataset = LimitedDataset(train_dataset)
 
     val_dataset = load_from_disk(config.dataset.librispeech_test)
     val_dataset = LimitedDataset(val_dataset.select(
@@ -510,20 +499,23 @@ def main():
         adapter = WavTokensEncoder(
             AUDIO_TOKENS, QWEN_EMB_SIZE, config.model.num_layers, add_rope=True)
     adapter = adapter.to(device)
-    opt_adapter = torch.optim.RMSprop(adapter.parameters(), config.opt.lr)
-    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
-        opt_adapter,
-        start_factor=0.001,
-        end_factor=1.0,
-        total_iters=config.opt.warmup_steps
-    )
 
     if hasattr(config.model, 'blank_checkpoint'):
         raise NotImplementedError('Not supported at the moment')
     else:
         blank_emb = BlankEmb(QWEN_EMB_SIZE)
     blank_emb = blank_emb.to(device)
-    opt_blank = torch.optim.RMSprop(blank_emb.parameters(), config.opt.lr)
+
+    opt = torch.optim.AdamW(
+        list(adapter.parameters()) + list(blank_emb.parameters()),
+        config.opt.lr
+    )
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+        opt,
+        start_factor=0.001,
+        end_factor=1.0,
+        total_iters=config.opt.warmup_steps
+    )
 
     print(f'Model size: {get_number_of_parameters(adapter)}')
 
@@ -546,10 +538,9 @@ def main():
         val_dataset,
         tokenizer,
         adapter,
-        opt_adapter,
-        warmup_scheduler,
         blank_emb,
-        opt_blank,
+        opt,
+        warmup_scheduler,
         ctc,
         reporter
     )
