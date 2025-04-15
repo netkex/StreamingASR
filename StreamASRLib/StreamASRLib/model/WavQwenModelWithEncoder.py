@@ -58,17 +58,15 @@ class WavQwenModelWithEncoder(WavQwenBaseModel):
             parameter.requires_grad = True
         self.model.model.embed_tokens.freeze_base_emb()
 
+    def freeze_emb(self):
+        for parameter in self.model.model.embed_tokens.parameters():
+            parameter.requires_grad = False
+
     @classmethod
-    def init_with_encoder(cls, path: str, **encoder_kwargs):
-        wav_encoder = WavTokensEncoder.load(
-            path,
-            num_tokens=WavQwenModelWithEncoder.EXT_TOKENS,
-            **encoder_kwargs
-        )
+    def init_with_encoder(cls, wav_encoder: nn.Module):
         qwen_model = AutoModelForCausalLM.from_pretrained(
             WavQwenModelWithEncoder.QWEN_REPO)
         base_emb = qwen_model.model.embed_tokens
-
         enc_emb = EmbeddingWithEncoder(
             base_emb, wav_encoder, WavQwenModelWithEncoder.AUDIO_TOKEN_THRESHOLD)
         qwen_model.model.embed_tokens = enc_emb

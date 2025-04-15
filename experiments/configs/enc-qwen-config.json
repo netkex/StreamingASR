@@ -1,0 +1,40 @@
+{
+    "dataset": {
+        "librispeech_train": "/home/netkex/datasets/custom/librispeech-train-40tks-raw",
+        "librispeech_test": "/home/netkex/datasets/custom/librispeech-test-40tks-raw",
+        "val_size": 256
+    },
+    "wav_tokenizer": {
+        "config": "/home/netkex/models/WavTokenizer/wavtokenizer_smalldata_frame40_3s_nq1_code4096_dim512_kmeans200_attn.yaml",
+        "model": "/home/netkex/models/WavTokenizer/wavtokenizer_large_unify_600_24k.ckpt"
+    },
+    "model": {
+        "encoder": {
+            "num_layers": 7,
+            "checkpoint": "/home/netkex/outputs/train-ctc-encoder/base/adapter-exp-02.pt"
+        },
+        "freeze_emb": true
+    },
+    "wandb": {
+        "project": "Qwen05b-with-encoder-40tks-train",
+        "run_name": "CTC-encoder-7-layers-freeze-emb",
+        "notes": "CTC encoder with 7 layers; all embedings are freezed"
+    },
+    "training": {
+        "output_dir": "/home/netkex/outputs/exp01",
+        "eval_steps": 50,
+        "per_device_train_batch_size": 4,
+        "per_device_eval_batch_size": 4,
+        "gradient_accumulation_steps": 16,
+        "bf16": false,
+        "bf16_full_eval": false,
+        "dataloader_num_workers": 8,
+        "dataloader_prefetch_factor": 4,
+        "learning_rate": 5e-5,
+        "lr_scheduler_type": "constant",
+        "warmup_steps": 0,
+        "max_grad_norm": 5.0,
+        "max_steps": 20000,
+        "save_steps": 50
+    }
+}
