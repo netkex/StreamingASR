@@ -21,7 +21,8 @@ class WerMetric:
                 self.tokenizer, logits[id, (start - 1):(end - 2), :])
             orig_seq = self.tokenizer.decode(
                 input_ids[id, start:(end - 1)].detach().cpu())
-            self.wer_hist.append(calculate_wer([ref_seq], [orig_seq]))
+            if len(ref_seq) > 0 and len(orig_seq) > 0:
+                self.wer_hist.append(calculate_wer([ref_seq], [orig_seq]))
         if compute_result:
             wer_ = np.mean(self.wer_hist)
             self.wer_hist = []
