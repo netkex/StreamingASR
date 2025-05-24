@@ -1,0 +1,68 @@
+{
+    "dataset": {
+        "train": {
+            "root": [
+                "/home/netkex/datasets/original/librispeech-train-clean-100",
+                "/home/netkex/datasets/original/librispeech-train-clean-360",
+                "/home/netkex/datasets/original/librispeech-train-other-500"
+            ],
+            "split": [
+                "train-clean-100",
+                "train-clean-360",
+                "train-other-500"
+            ]
+        },
+        "test": {
+            "root": [
+                "с"
+            ],
+            "split": [
+                "test-clean"
+            ],
+            "val_size": 64
+        }
+    },
+    "model": {
+        "adapter_config": {
+            "n_mels": 80,
+            "hidden_size": 896,
+            "attention_layers": 9,
+            "proj_size": 896
+        },
+        "ext_emb_config": {
+            "num_embeddings": 3,
+            "embedding_dim": 896
+        },
+        "adapter_checkpoint": "/home/netkex/outputs/train-ctc-encoder/mel/adapter-exp-01.pt",
+        "checkpoint": "/home/netkex/outputs/qwen-mel/exp-01/checkpoint"
+    },
+    "opt": {
+        "lr": 2e-5,
+        "warmup_steps": 3
+    },
+    "wandb": {
+        "enabled": true,
+        "project": "[CTC] Mel-Qwen",
+        "run_name": "9-layers adapter (freezed qwen) (run 6)",
+        "notes": "full"
+    },
+    "train": {
+        "freeze_qwen": true,
+        "freeze_adapter": false,
+        "epoches": 20,
+        "batch_size": 2,
+        "gradient_accumulation_steps": 32,
+        "dl_workers": 16,
+        "prefetch_factor": 1,
+        "save_freq": 20,
+        "grad_clip": 2.0,
+        "val_freq": 20,
+        "train_metric_subset": 64,
+        "checkpoint": "/home/netkex/outputs/qwen-mel/exp-01/checkpoint",
+        "best_checkpoint": "/home/netkex/outputs/qwen-mel/exp-01/best_checkpoint"
+    },
+    "log": {
+        "sample_freq": 20,
+        "sample_size": 10
+    }
+}
