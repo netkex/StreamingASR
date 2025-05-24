@@ -1,0 +1,59 @@
+{
+    "dataset": {
+        "train": {
+            "root": [
+                "/home/netkex/datasets/original/librispeech-train-clean-100",
+                "/home/netkex/datasets/original/librispeech-train-clean-360",
+                "/home/netkex/datasets/original/librispeech-train-other-500"
+            ],
+            "split": [
+                "train-clean-100",
+                "train-clean-360",
+                "train-other-500"
+            ]
+        },
+        "test": {
+            "root": [
+                "/home/netkex/datasets/original/librispeech-test-clean"
+            ],
+            "split": [
+                "test-clean"
+            ],
+            "val_size": 512
+        },
+        "qwen_tokens": "/home/netkex/datasets/custom/ctc-tokens.pt"
+    },
+    "model": {
+        "hidden_size": 896,
+        "num_layers": 9,
+        "ctc_temp": 0.01
+    },
+    "opt": {
+        "lr": 1e-4,
+        "warmup_steps": 750
+    },
+    "wandb": {
+        "enabled": true,
+        "project": "[CTC] Mel-Adapter",
+        "run_name": "9-layers (Adam)",
+        "notes": "full"
+    },
+    "train": {
+        "epoches": 10000,
+        "batch_size": 16,
+        "gradient_accumulation_steps": 8,
+        "dl_workers": 16,
+        "prefetch_factor": 1,
+        "save_freq": 100,
+        "grad_clip": 2.0,
+        "val_freq": 50,
+        "adapter_checkpoint": "/home/netkex/outputs/train-ctc-encoder/mel/adapter-exp-01.pt",
+        "adapter_best_checkpoint": "/home/netkex/outputs/train-ctc-encoder/mel/adapter-best-exp-01.pt",
+        "blank_checkpoint": "/home/netkex/outputs/train-ctc-encoder/mel/blank-exp-01.pt",
+        "blank_best_checkpoint": "/home/netkex/outputs/train-ctc-encoder/mel/blank-best-exp-01.pt"
+    },
+    "log": {
+        "sample_freq": 50,
+        "num_samples": 1
+    }
+}
